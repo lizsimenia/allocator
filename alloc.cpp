@@ -2,16 +2,29 @@
 #include <iostream>
 #include <windows.h>
 #include "alloc.h"
+#include "statistics.h"
+
 
 using namespace std;
 
-
 // Общие функции для распределитей памяти
+void cleanUpMemory() {
+    // Освобождение всех выделенных страниц
+    if (freep != nullptr) {
+        Header* p = freep;
+        while (p != nullptr) {
+            Header* next = p->ptr;
+            if (p != nullptr) {
+                if (!VirtualFree(p, 0, MEM_RELEASE)) {
+                    break;
+                }
+            }
+            p = next;
+        }
+        freep = nullptr; // Обнуление указателя на свободный список
+    }
+}
 void freeAlloc(void* ap) {
-    //Искомое место может оказаться или между блоками, или в
-    //начале списка, или в его конце. В любом случае, если подлежащий освобождению блок примыкает к
-    //соседнему блоку, он объединяется с ним в один блок.О чем еще осталось позаботиться, — так это о том,
-    //чтобы указатели указывали в нужные места и размеры блоков были правильными.
     if (ap == nullptr) return;
 
     Header* bp = (Header*)ap - 1; // Указатель на заголовок блока
@@ -51,13 +64,12 @@ HeaderPtr morecore(size_t nu) {
         return nullptr;
     up->size = nu;
     freeAlloc((void*)(up + 1)); // освобождение блока, который только что выделен
-    cout << "Подкачка!" << endl ;
     return freep; 
 }
 
 // Распределители памяти, использующие разные подходы
 void* firstFitMalloc(size_t nbytes) {
-    HeaderPtr p, prevp;
+    HeaderPtr p, prevp, firstp = nullptr, firstprevp = nullptr;
     size_t nunits;
 
     nunits = (nbytes + sizeof(Header) - 1) / sizeof(Header) + 1; // Вычисление памяти
@@ -70,10 +82,22 @@ void* firstFitMalloc(size_t nbytes) {
 
     // Свободные блоки существуют
     for (p = prevp->ptr; ; prevp = p, p = p->ptr) { // Бесконечный цикл поиска места
+        if (p == freep && firstp != nullptr) break;
+        if (p == freep && firstp == nullptr) {
+            if ((p = morecore(nunits)) == nullptr) {
+                return nullptr;
+            }
+            continue;
+        }
         if (p->size >= nunits) {
-            if (p->size == nunits) // Если размер блока равен искомому
+            if (p->size == nunits) { // Если размер блока равен искомому
+                firstp = p;
+                firstprevp = prevp;
                 prevp->ptr = p->ptr;
+            }
             else {
+                firstp = p;
+                firstprevp = prevp;
                 p->size -= nunits; // Уменьшение размера
                 p += p->size; // Перемещение указателя на уменьшенный блок
                 p->size = nunits; // Установка нового размера
@@ -81,10 +105,6 @@ void* firstFitMalloc(size_t nbytes) {
             freep = prevp; // Перемещение начала списка свободных блоков
             return (void*)(p + 1); // Возвращение указателя на выделенную память после Header
         }
-        if (p == freep) // Если все блоки пройдены, то выделяется новая память
-            if ((p = morecore(nunits)) == nullptr) {
-                return nullptr;
-            }
     }
 }
 void* bestFitMalloc(size_t nbytes) {
@@ -98,19 +118,20 @@ void* bestFitMalloc(size_t nbytes) {
     }
 
     for (p = prevp->ptr; ; prevp = p, p = p->ptr) {
+        if (p == freep && bestp != nullptr) break;
+        if (p == freep && bestp == nullptr) {
+            if ((p = morecore(nunits)) == nullptr) {
+                return nullptr;
+            }
+            continue;
+        }
         if (p->size >= nunits) {
             size_t excess = p->size - nunits;
-            if (excess < minexcess) { // Если в новом блоке меньше ненужного места, то всё обновляется
+            if (excess <= minexcess) { // Если в новом блоке меньше ненужного места, то всё обновляется
                 minexcess = excess;
                 bestp = p;
                 bestprevp = prevp;
                 if (excess == 0) break; // Если заполняет всё место в блоке, то он идеален
-            }
-        }
-        if (p == freep) { // Если все блоки пройдены, то выделяется новая память
-            osMemoryRequests++;
-            if ((p = morecore(nunits)) == nullptr) {
-                return nullptr;
             }
         }
     }
@@ -138,24 +159,20 @@ void* worstFitMalloc(size_t nbytes) {
     }
 
     for (p = prevp->ptr; ; prevp = p, p = p->ptr) {
+        if (p == freep && worstp!= nullptr) break;
+        if (p == freep && worstp == nullptr) {
+            if ((p = morecore(nunits)) == nullptr) {
+                return nullptr; 
+            }
+            continue;
+        }
         if (p->size >= nunits) {
             size_t excess = p->size - nunits;
-            cout << excess << endl;
             if (excess >= maxexcess) { // Если свободного места в блоке больше, то всё обновляется
                 maxexcess = excess;
                 worstp = p;
                 worstprevp = prevp;
             }
-        }
-        if (p == freep && worstp == nullptr) { // Если все блоки пройдены, то выделяется новая память, этот блок будет наихудшим
-            p = morecore(nunits);
-            worstp = p;
-            worstprevp = prevp;
-            osMemoryRequests++;
-            break;
-        }
-        if (p == freep) {
-            break;
         }
     }
   
@@ -170,9 +187,5 @@ void* worstFitMalloc(size_t nbytes) {
         }
         freep = worstprevp;
         return (void*)(worstp + 1);
-    }
-    else {
-        cout << "problems" << endl;
-        return 0;
     }
 }
